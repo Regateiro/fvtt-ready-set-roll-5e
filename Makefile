@@ -4,6 +4,7 @@ VERSION=1.5.2a
 .PHONY: compress install
 
 compress:
+	rm releases/rsr5e-release-$(VERSION).zip
 	zip -r releases/rsr5e-release-$(VERSION).zip css/ icons/ lang/ lib/ src/ templates/ LICENSE module.json
 
 install: compress
