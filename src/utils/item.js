@@ -138,7 +138,7 @@ export class ItemUtility {
         if (item?.hasUses && item?.flags[MODULE_SHORT].consumeUses) {
             config.consumeUsage = item.flags[MODULE_SHORT].consumeUses[isAltRoll ? "altValue" : "value"];
         }
-        if (item?.hasResource && item?.flags[MODULE_SHORT].consumeResource) {
+        if (item?._hasResource && item?.flags[MODULE_SHORT].consumeResource) {
             config.consumeResource = item.flags[MODULE_SHORT].consumeResource[isAltRoll ? "altValue" : "value"];
         }
         if (item?.hasRecharge && item?.flags[MODULE_SHORT].consumeRecharge) {
@@ -194,7 +194,7 @@ export class ItemUtility {
             // For items with "Limited Uses" configured
             item.hasUses = item.type !== ITEM_TYPE.SPELL && !!(item.system.uses?.value || item.system.uses?.max || item.system.uses?.per);
             // For items with "Resource Consumption" configured
-            item.hasResource = item.type !== ITEM_TYPE.SPELL && !!(item.system.consume?.target);
+            item._hasResource = item.type !== ITEM_TYPE.SPELL && !!(item.system.consume?.target);
             // For abilities with "Action Recharge" configured
             item.hasRecharge = item.type !== ITEM_TYPE.SPELL && !!(item.system.recharge?.value);
         }

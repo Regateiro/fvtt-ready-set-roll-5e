@@ -4,9 +4,8 @@
 	"description": "This module overhauls rolls for the D&D 5e system in the style of BetterRolls5e.",
 	"version": "2.1.3a",
 	"compatibility": {
-		"minimum": "11.299",
-		"verified": "11.313",
-		"maximum": "11"
+		"minimum": "10",
+		"verified": "10"
 	},
 	"authors": [
 		{
@@ -42,7 +41,7 @@
 				"manifest": "https://raw.githubusercontent.com/foundryvtt/dnd5e/master/system.json",
 				"compatibility": {
 					"minimum": "2.2.0",
-					"verified": "2.3.1"
+					"verified": "2.4.0"
 				}
 			}
 		],
