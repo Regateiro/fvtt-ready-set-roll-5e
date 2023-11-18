@@ -37,17 +37,17 @@ export class ItemUtility {
         ItemUtility.ensureFlagsOnitem(item);
         ItemUtility.ensureItemParams(item, params);
         
-        const manualDamage = SettingsUtility.getSettingValue(SETTING_NAMES.ALWAYS_MANUAL_DAMAGE);
+        const manualDamageMode = SettingsUtility.getSettingValue(SETTING_NAMES.MANUAL_DAMAGE_MODE);
+        const manualDamage = manualDamageMode === 2 || (manualDamageMode === 1 && item.hasAttack);
         const applyEffects = CoreUtility.hasDAE() && SettingsUtility.getSettingValue(SETTING_NAMES.APPLY_EFFECTS_ENABLED);
         const chatData = await item.getChatData();
         let fields = [];
 
-
-        if (ItemUtility.getFlagValueFromItem(item, "quickFlavor", params.isAltRoll)) {
+        if (ItemUtility.getFlagValueFromItem(item, "quickFlavor", params.isAltRoll) && !params?.forceHideDescription) {
             _addFieldFlavor(fields, chatData);
         }
 
-        if (ItemUtility.getFlagValueFromItem(item, "quickDesc", params.isAltRoll)) {
+        if (ItemUtility.getFlagValueFromItem(item, "quickDesc", params.isAltRoll) && !params?.forceHideDescription) {
             _addFieldDescription(fields, chatData);
         }
 
@@ -171,7 +171,7 @@ export class ItemUtility {
      */
     static getDamageContextFromItem(item, index) {
         if (item?.flags[MODULE_SHORT].quickDamage) {          
-            return item.flags[MODULE_SHORT].quickDamage.context[index] ?? undefined;
+            return item.flags[MODULE_SHORT].quickDamage.context[index] ?? CoreUtility.localize(`${MODULE_SHORT}.chat.bonus.bonus`);
         }
 
         return undefined;
@@ -215,7 +215,7 @@ export class ItemUtility {
         params.isAltRoll = params?.isAltRoll ?? false;
         params.damageFlags = ItemUtility.getFlagValueFromItem(item, "quickDamage", params.isAltRoll);
         params.effectFlags = ItemUtility.getFlagValueFromItem(item, "quickEffects", params.isAltRoll);
-        params.versatile = ItemUtility.getFlagValueFromItem(item, "quickVersatile", params.isAltRoll);
+        params.versatile = item.isVersatile ? ItemUtility.getFlagValueFromItem(item, "quickVersatile", params.isAltRoll) : false;
         params.elvenAccuracy = (item.actor?.flags?.dnd5e?.elvenAccuracy && 
             CONFIG.DND5E.characterFlags.elvenAccuracy.abilities.includes(item.abilityMod)) || undefined
     }
@@ -257,19 +257,22 @@ export class ItemUtility {
         if (CONFIG[MODULE_SHORT].flags[item.type].quickDamage) {
             let newQuickDamageValues = [];
             let newQuickDamageAltValues = [];
+            let newQuickDamageContexts = [];
 
             // Make quick damage flags if they don't exist
             if (!moduleFlags.quickDamage) {
-                moduleFlags.quickDamage = { type: "Array", value: [], altValue: [] };
+                moduleFlags.quickDamage = { type: "Array", value: [], altValue: [], context: [] };
             }
 
             for (let i = 0; i < item.system.damage?.parts.length; i++) {
                 newQuickDamageValues[i] = moduleFlags.quickDamage.value[i] ?? true;
                 newQuickDamageAltValues[i] = moduleFlags.quickDamage.altValue[i] ?? true;
+                newQuickDamageContexts[i] = moduleFlags.quickDamage.context[i] ?? "";
             }
 
             moduleFlags.quickDamage.value = newQuickDamageValues;
             moduleFlags.quickDamage.altValue = newQuickDamageAltValues;
+            moduleFlags.quickDamage.context = newQuickDamageContexts;
         }
 
         // If quick effects flags should exist, update them based on which effects are active
@@ -279,7 +282,7 @@ export class ItemUtility {
             let newQuickEffectContexts = [];
 
             if (!moduleFlags.quickEffects) {
-                moduleFlags.quickEffects = { type: "Array", value: [], altValue: [] };
+                moduleFlags.quickEffects = { type: "Array", value: [], altValue: [], context: [] };
             }
 
             const activeEffects = item.collections.effects.filter((effect) => !effect.disabled);
@@ -309,7 +312,9 @@ export class ItemUtility {
  */
 function _getConsumeTargetFromItem(item) {
     if (item.system.consume.type === "ammo") {
-        return item.actor.items.get(item.system.consume.target);
+        const target = item.actor.items.get(item.system.consume.target);
+        ItemUtility.ensureFlagsOnitem(target);
+        return target;
     }
 
     return undefined;
@@ -452,11 +457,14 @@ async function _addFieldAttack(fields, item, params) {
             item.system.consume.amount = 0;
         }
 
+        const bonuses = params?.bonuses?.filter(b => b.id === ROLL_TYPE.ATTACK).map(b => b.value);
+
         let roll = await item.rollAttack({
             fastForward: true,
             chatMessage: false,
             advantage: params?.advMode > 0 ?? false,
-            disadvantage: params?.advMode < 0 ?? false
+            disadvantage: params?.advMode < 0 ?? false,
+            parts: bonuses
         });
 
         // Reset ammo to avoid later issues.
@@ -492,19 +500,37 @@ async function _addFieldDamage(fields, item, params) {
             return;
         }
 
+        // Backup ammo damage so we can temporarily replace with versatile damage if needed.
+        const ammoDamageBackup = item._ammo ? foundry.utils.duplicate(item._ammo?.system?.damage) : null;
+        if (item._ammo && ItemUtility.getFlagValueFromItem(item._ammo, "quickVersatile", params.isAltRoll)) {
+            item._ammo.system.damage.parts[0][0] = item._ammo.system.damage.versatile;
+        }        
+        const bonuses = params?.bonuses?.filter(b => b.id === ROLL_TYPE.DAMAGE && b.value !== '').map(b => b.value);
+
         const roll = await item.rollDamage({
             critical: false,
             versatile: params?.versatile ?? false,
             spellLevel: params?.slotLevel,
             options: {
                 fastForward: true,
-                chatMessage: false
+                chatMessage: false,
+                parts: bonuses
             }
         });
 
+        // Restore ammo damage post rolling.
+        if (ammoDamageBackup) {
+            _getConsumeTargetFromItem(item).system.damage = ammoDamageBackup;
+        }
+
+        const damageParts = [ ...item.system.damage.parts ];
+        if (bonuses && bonuses.length > 0) {
+            damageParts.push(...bonuses.map(b => [ b, '' ]));
+        }
+
         let damageTermGroups = [];
         let damageContextGroups = [];
-        item.system.damage.parts.forEach((part, i) => {
+        damageParts.forEach((part, i) => {
             const damagePart = (i === 0 && (params?.versatile ?? false)) ? item.system.damage.versatile : part[0];
             const tmpRoll = new CONFIG.Dice.DamageRoll(damagePart, item.getRollData()).evaluate({ async: false });
             const partTerms = roll.terms.splice(0, tmpRoll.terms.length);
@@ -576,11 +602,14 @@ async function _addFieldOtherFormula(fields, item) {
  */
 async function _addFieldAbilityCheck(fields, item, params) {
     if (item.type === ITEM_TYPE.TOOL) {
+        const bonuses = params?.bonuses?.filter(b => b.id === ROLL_TYPE.TOOL).map(b => b.value);
+
         const roll = await item.rollToolCheck({
             fastForward: true,
             chatMessage: false,
             advantage: params?.advMode > 0 ?? false,
-            disadvantage: params?.advMode < 0 ?? false
+            disadvantage: params?.advMode < 0 ?? false,
+            parts: bonuses
         });
 
         fields.push([
@@ -591,17 +620,20 @@ async function _addFieldAbilityCheck(fields, item, params) {
             }
         ]);
     } else if (item.hasAbilityCheck && item.actor) {
-        if (!(item.hasAbilityCheck in CONFIG.DND5E.abilities)) {
+        if (!(item.abilityMod in CONFIG.DND5E.abilities)) {
             LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.labelNotInDictionary`,
-                { type: "Ability", label: ability, dictionary: "CONFIG.DND5E.abilities" }));
+                { type: "Ability", label: item.abilityMod, dictionary: "CONFIG.DND5E.abilities" }));
             return;
 		}
+        
+        const bonuses = params?.bonuses?.filter(b => b.id === ROLL_TYPE.ABILITY_TEST).map(b => b.value);
 
-        const roll = await item.actor.rollAbilityTest(item.hasAbilityCheck, {
+        const roll = await item.actor.rollAbilityTest(item.abilityMod, {
             fastForward: true,
             chatMessage: false,
             advantage: params?.advMode > 0 ?? false,
-            disadvantage: params?.advMode < 0 ?? false
+            disadvantage: params?.advMode < 0 ?? false,            
+            parts: bonuses
         });
 
         // Adds a seperator for UI clarity.
@@ -612,7 +644,7 @@ async function _addFieldAbilityCheck(fields, item, params) {
             {
                 roll: await RollUtility.ensureMultiRoll(roll, params),
                 rollType: ROLL_TYPE.ATTACK,
-                title: `Ability Check - ${CONFIG.DND5E.abilities[item.hasAbilityCheck]}`
+                title: `Ability Check - ${CONFIG.DND5E.abilities[item.abilityMod].label}`
             }
         ]);
     }    

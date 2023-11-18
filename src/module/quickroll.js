@@ -133,18 +133,8 @@ export class QuickRoll {
 			data.fields = data.fields.map(JSON.parse);
 		}
 
-		// Rolls in fields are unpacked and must be recreated.
-		const fields = data?.fields ?? [];
-		fields.forEach(field => {
-			if (CONFIG[MODULE_SHORT].validMultiRollFields.includes(field[0])) {
-				field[1].roll = Roll.fromData(field[1].roll);
-			}
-
-			if (CONFIG[MODULE_SHORT].validDamageRollFields.includes(field[0])) {
-				field[1].baseRoll = field[1].baseRoll ? Roll.fromData(field[1].baseRoll) : null;
-				field[1].critRoll = field[1].critRoll ? Roll.fromData(field[1].critRoll) : null;
-			}
-		});
+		// Rolls in message data fields are unpacked and must be recreated.
+		const fields = CoreUtility.repackQuickRollFields(data?.fields ?? []);
 
 		const roll = new QuickRoll(null, data?.params ?? {}, fields);
 
@@ -226,7 +216,47 @@ export class QuickRoll {
 		Hooks.callAll(HOOKS_DND5E.PRE_DISPLAY_CARD, this.item, update);
 
 		return update;
-	}		
+	}
+
+	/**
+	 * Rerolls a quickroll into a new chat card.
+	 * @returns {Boolean} Whether or not the reroll was succesful.
+	 */
+	async repeatRoll() {
+		if (!this.hasPermission || !this.fields || this.fields.length === 0) {
+			return false;
+		}
+		
+		// For item rolls, simply reroll the item without any consumes.
+		if (this.item) {
+			await RollUtility.rollItem(this.item, { 
+				forceHideDescription: true,
+				slotLevel: this.params?.slotLevel,
+				spellLevel: this.params?.spellLevel
+			});
+			return true;
+		}
+
+		// For actor rolls, we don't know the type of actor roll so must reroll the fields directly.
+		if (this.actor) {			
+			// Rolls in duplicates are unpacked and must be recreated.
+			const fields = CoreUtility.repackQuickRollFields(foundry.utils.duplicate(this.fields));
+			
+			console.log(fields);
+
+			fields.forEach(field => {
+				if (CONFIG[MODULE_SHORT].validMultiRollFields.includes(field[0])) {
+					field[1].roll = field[1].roll.reroll({ async: false });
+				}
+			});
+	
+			const roll = new QuickRoll(this.actor, {}, fields);	
+			await roll.toMessage();
+			return true;
+		}
+
+		return false;
+	}
 
 	/**
 	 * Upgrades a specific roll in one of the roll fields to a multi roll if possible.
@@ -248,6 +278,8 @@ export class QuickRoll {
 
 		targetField[1].roll = await RollUtility.upgradeRoll(targetField[1].roll, targetState, this.params);
 		this.params.isMultiRoll = true;
+		this.params.hasAdvantage = targetState == ROLL_STATE.ADV;
+		this.params.hasDisadvantage = targetState == ROLL_STATE.DIS;
 
 		return true;
 	}
@@ -315,6 +347,57 @@ export class QuickRoll {
 
 		await Promise.all(promises);
 
+		return true;
+	}
+
+	/**
+	 * Rerolls a specific die inside a quick roll.
+	 * @param {Number} targetId The index of the roll field being rerolled.
+	 * @param {Number} targetRoll The index of the specific roll of the field being rerolled.
+	 * @param {Number} targetPart The index of the specific part of the roll being rerolled.
+	 * @param {Number} targetDie The index of the specific die of the part being rerolled.
+	 * @returns {Boolean} Whether or not the reroll was succesful. 
+	 */
+	async rerollDie(targetId, targetRoll, targetPart, targetDie) {
+		const targetField = this.fields[targetId];
+
+		if (!targetField || !this.hasPermission) {
+			return false;
+		}
+
+		let roll;
+		switch (targetField[0]) {
+			case FIELD_TYPE.DAMAGE:
+				roll = targetRoll === 0 ? targetField[1].baseRoll : targetField[1].critRoll;
+				break;
+			case FIELD_TYPE.ATTACK:
+			case FIELD_TYPE.CHECK:
+				roll = targetField[1].roll;
+				const dice = roll.terms[0].results.filter(r => r.active);
+				targetDie = roll.terms[0].results.indexOf(dice[targetRoll]);
+				break;
+			default:
+				return false;
+		}
+
+		if (!roll) {
+			return false;
+		}		
+
+		const terms = roll.terms;
+		const part = terms.filter(t => t instanceof Die)[targetPart];
+		const index = terms.indexOf(part);
+
+		terms[index] = await RollUtility.rerollSpecificDie(part, targetDie);
+
+		if (targetField[0] === FIELD_TYPE.DAMAGE) {
+			if (targetRoll === 0) {
+				targetField[1].baseRoll = Roll.fromTerms(terms);
+			} else {
+				targetField[1].critRoll = Roll.fromTerms(terms);
+			}
+		}
+		
 		return true;
 	}
 

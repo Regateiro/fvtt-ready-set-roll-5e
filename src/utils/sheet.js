@@ -15,7 +15,12 @@ export class SheetUtility {
         sheet?.setPosition({ height: "auto" })
     }
 
-    static async addModuleContentToSheet(sheet, protoHtml) {
+    /**
+     * Adds module content to an item sheet that is being opened.
+     * @param {Sheet} sheet The sheet instance of the sheet being constructed.
+     * @param {Object} protoHtml The html of the sheet being constructed.
+     */
+    static async addModuleContentToItemSheet(sheet, protoHtml) {
         const item = sheet?.object;
 
         if (!item || !item instanceof Item) {
@@ -54,11 +59,38 @@ export class SheetUtility {
             SheetUtility.setAutoHeightOnSheet(sheet);
         }
     }
+
+    /**
+     * Adds module content to an actor sheet that is being opened.
+     * @param {Sheet} sheet The sheet instance of the sheet being constructed.
+     * @param {Object} protoHtml The html of the sheet being constructed.
+     */
+    static async addModuleContentToActorSheet(sheet, protoHtml) {
+        const actor = sheet?.object;
+
+        if (!actor || !actor instanceof Actor) {
+            LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.objectNotExpectedType`, { type: "Actor" }));
+            return;
+        }
+
+        if (actor.permission < 3) {
+            return;
+        }
+
+        let html = protoHtml;
+        if (html[0].localName !== "div") {
+            html = $(html[0].parentElement.parentElement);
+        }
+
+        if (SettingsUtility.getSettingValue(SETTING_NAMES.SITU_ROLL_ENABLED)) {
+            _addSituRollListeners(actor, html);
+        }
+    }
 }
 
 /**
  * Adds an item options tab to the provided item sheet.
- * @param {Object} html The html data container of the sheet.
+ * @param {JQuery} html The html data container of the sheet.
  * @private
  */
 function _addItemOptionsTab(html) {
@@ -71,7 +103,7 @@ function _addItemOptionsTab(html) {
 /**
  * Adds roll configuration UI for a specific item sheet.
  * @param {Item} item The item to whom the sheet belongs.
- * @param {object} html The html data container of the sheet.
+ * @param {JQuery} html The html data container of the sheet.
  * @private
  */
 async function _addItemOptions(item, html) {
@@ -115,9 +147,79 @@ async function _addItemOptions(item, html) {
 }
 
 /**
+ * Adds listeners in a number of locations for rolling with a situational bonus dialog.
+ * Listeners are only added in the specific location if the relevant quick roll is enabled.
+ * @param {Actor} actor The actor for which the listeners are being added.
+ * @param {JQuery} html The html of the sheet in which listeners are being added.
+ */
+function _addSituRollListeners(actor, html) {
+    if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_SKILL_ENABLED)) {
+        html.find(".skill-name").on("auxclick", evt => {
+            if (evt.button !== CONFIG[MODULE_SHORT].situRollMouseButton) {
+                return;
+            }
+
+            evt.preventDefault();
+            const skill = evt.currentTarget.closest("[data-key]").dataset.key;
+            return actor.rollSkill(skill, {event: evt});
+        });
+
+        html.find(".tool-name").on("auxclick", evt => {
+            if (evt.button !== CONFIG[MODULE_SHORT].situRollMouseButton) {
+                return;
+            }
+    
+            evt.preventDefault();
+            const tool = evt.currentTarget.closest("[data-key]").dataset.key;
+            return actor.rollToolCheck(tool, {event: evt});
+        });    
+    }
+
+    if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ABILITY_ENABLED)) {
+        html.find(".ability-name").on("auxclick", evt => {        
+            if (evt.button !== CONFIG[MODULE_SHORT].situRollMouseButton) {
+                return;
+            }
+
+            evt.preventDefault();
+            const ability = evt.currentTarget.parentElement.dataset.ability;
+            return actor.rollAbility(ability, {event: evt});
+        });
+    }
+
+    if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_DEATH_ENABLED)) {
+        html.find(".rollable[data-action]").on("auxclick", async evt => {
+            if (evt.button !== CONFIG[MODULE_SHORT].situRollMouseButton) {
+                return;
+            }
+
+            evt.preventDefault();
+            const button = evt.currentTarget;
+
+            if (button.dataset.action === "rollDeathSave") {
+                return actor.rollDeathSave({event: evt});
+            }
+        });
+    }
+
+    if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ITEM_ENABLED)) {
+        html.find(".rollable .item-image").on("auxclick", async evt => {
+            if (evt.button !== CONFIG[MODULE_SHORT].situRollMouseButton) {
+                return;
+            }
+
+            evt.preventDefault();
+            const itemId = evt.currentTarget.closest(".item").dataset.itemId;
+            const item = actor.items.get(itemId);
+            return item.use({}, {event: evt});
+        });        
+    }
+}
+
+/**
  * Adds context text fields to an item sheet next to all damage fields and the other formula field.
  * @param {Item} item The item to whom the sheet belongs.
- * @param {object} html The html data container of the sheet.
+ * @param {JQuery} html The html data container of the sheet.
  * @private 
  */
 function _addDamageContextFields(item, html) {

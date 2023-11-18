@@ -2,11 +2,11 @@
 	"id": "ready-set-roll-5e",
 	"title": "Ready Set Roll for D&D5e",
 	"description": "This module overhauls rolls for the D&D 5e system in the style of BetterRolls5e.",
-	"version": "1.5.2a",
+	"version": "2.1.3a",
 	"compatibility": {
-		"minimum": "10.274",
-		"verified": "10.291",
-		"maximum": "10"
+		"minimum": "11.299",
+		"verified": "11.313",
+		"maximum": "11"
 	},
 	"authors": [
 		{
@@ -41,8 +41,8 @@
 				"type": "system",
 				"manifest": "https://raw.githubusercontent.com/foundryvtt/dnd5e/master/system.json",
 				"compatibility": {
-					"minimum": "2.2.1",
-					"verified": "2.2.1"
+					"minimum": "2.2.0",
+					"verified": "2.3.1"
 				}
 			}
 		],

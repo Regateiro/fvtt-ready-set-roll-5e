@@ -11,19 +11,28 @@ import { QuickRoll } from "./quickroll.js";
 export class QuickCard {
     _applyDamageToTargeted;
     _applyDamageToSelected;
+    _prioritiseDamageTargeted;
+    _prioritiseDamageSelected;
+
     _applyEffectsToTargeted;
     _applyEffectsToSelected;
+    _prioritiseEffectsTargeted;
+    _prioritiseEffectsSelected;
 
     constructor (message, html) {
         const applyDamageOption = SettingsUtility.getSettingValue(SETTING_NAMES.APPLY_DAMAGE_TO);
-        this._applyDamageToTargeted = applyDamageOption === 1 || applyDamageOption === 2;
-        this._applyDamageToSelected = applyDamageOption === 0 || applyDamageOption === 2;
+        this._applyDamageToTargeted = applyDamageOption === 1 || applyDamageOption >= 2;
+        this._applyDamageToSelected = applyDamageOption === 0 || applyDamageOption >= 2;
+        this._prioritiseDamageTargeted = applyDamageOption === 4;
+        this._prioritiseDamageSelected = applyDamageOption === 3;
 
         if (CoreUtility.hasDAE())
         {
             const applyEffectsOption = SettingsUtility.getSettingValue(SETTING_NAMES.APPLY_EFFECTS_TO);
-            this._applyEffectsToTargeted = applyEffectsOption === 1 || applyEffectsOption === 2;
-            this._applyEffectsToSelected = applyEffectsOption === 0 || applyEffectsOption === 2;
+            this._applyEffectsToTargeted = applyEffectsOption === 1 || applyEffectsOption >= 2;
+            this._applyEffectsToSelected = applyEffectsOption === 0 || applyEffectsOption >= 2;
+            this._prioritiseEffectsTargeted = applyEffectsOption === 4;
+            this._prioritiseEffectsSelected = applyEffectsOption === 3;
         }
 
         this.updateBinding(message, html);
@@ -48,6 +57,7 @@ export class QuickCard {
             html.find(".hideSave").text(CoreUtility.localize(`${MODULE_SHORT}.chat.hide`));
         }
 
+        this._setupRerollDice(html);
         this._setupActionButtons(html);
 
         if (SettingsUtility.getSettingValue(SETTING_NAMES.OVERLAY_BUTTONS_ENABLED)) {
@@ -93,7 +103,19 @@ export class QuickCard {
      */
 	_onHoverEnd(html) {
 		html.find(".die-result-overlay-rsr").attr("style", "display: none;");
-	}
+	}    
+    
+    /**
+     * Adds all dice reroll event handlers to a chat card.
+     * @param {JQuery} html The object to add reroll handlers to.
+     */
+    _setupRerollDice(html) {
+        if (SettingsUtility.getSettingValue(SETTING_NAMES.DICE_REROLL_ENABLED)) {
+            html.find(".dice-tooltip .dice-rolls .roll").not(".discarded").not(".rerolled").addClass("rollable").click(async evt => {
+                await this._processRerollDieEvent(evt);
+            });
+        }
+    }
 
     /**
      * Adds all manual action button event handlers to a chat card.
@@ -101,7 +123,7 @@ export class QuickCard {
      * @param {JQuery} html The object to add button handlers to.
      */
     _setupActionButtons(html) {        
-        if (SettingsUtility.getSettingValue(SETTING_NAMES.ALWAYS_MANUAL_DAMAGE)) {
+        if (SettingsUtility.getSettingValue(SETTING_NAMES.MANUAL_DAMAGE_MODE) > 0) {
             html.find(".rsr-damage-buttons button").click(async evt => {
                 await this._processDamageButtonEvent(evt);
             });
@@ -114,7 +136,7 @@ export class QuickCard {
         }
         
         LogUtility.log("Initialised quick card action buttons.")
-    }
+    }    
 
     /**
      * Adds all overlay buttons to a chat card.
@@ -124,6 +146,7 @@ export class QuickCard {
     async _setupOverlayButtons(html) {
         await this._setupMultiRollOverlayButtons(html);
         await this._setupDamageOverlayButtons(html);
+        await this._setupHeaderOverlayButtons(html);
 
         // Enable Hover Events (to show/hide the elements).
 		this._onHoverEnd(html);
@@ -181,6 +204,22 @@ export class QuickCard {
     }
 
     /**
+     * Adds overlay buttons to a chat card header for quick-repeating a roll.
+     * @param {JQuery} html The object to add overlay buttons to.
+     * @private
+     */
+    async _setupHeaderOverlayButtons(html) {
+        const template = await RenderUtility.renderOverlayHeader();
+
+        html.find(".card-header").append($(template));      
+
+        // Handle clicking the multi-roll overlay buttons
+        html.find(".header-overlay-rsr button").click(async evt => {
+            await this._processRepeatButtonEvent(evt);
+        });
+    }
+
+    /**
      * Processes and handles a manual damage button click event.
      * @param {Event} event The originating event of the button click.
      * @private
@@ -213,8 +252,17 @@ export class QuickCard {
         const action = button.dataset.rsr;
 
         if (action === "effects-rsr") {
-            const selectTokens = this._applyEffectsToSelected ? canvas.tokens.controlled : [];
-            const targetTokens = this._applyEffectsToTargeted ? game.user.targets : [];
+            let selectTokens = this._applyEffectsToSelected ? canvas.tokens.controlled : [];
+            let targetTokens = this._applyEffectsToTargeted ? game.user.targets : [];
+
+            if (this._prioritiseEffectsSelected && selectTokens.length > 0) {
+                targetTokens = [];
+            }
+
+            if (this._prioritiseEffectsTargeted && targetTokens.size > 0) {
+                selectTokens = [];
+            }
+
             const targets = new Set([...selectTokens, ...targetTokens]);
 
             window.DAE.doEffects(this.roll.item, true, targets, {
@@ -271,27 +319,30 @@ export class QuickCard {
         event.preventDefault();
         event.stopPropagation();
 
-        // Retrieve the proper damage thats supposed to be applied via this set of buttons.
-        const modifier = $(event.target).closest("button").attr('data-modifier');
-        const damageElement = $(event.target.parentNode.parentNode.parentNode.parentNode);
-        let damage = damageElement.find('.rsr-base-die').text();
+        // Retrieve the total damage, damage type, and damage modifier to be applied by this particular button.
+        const modifier = $(event.target).closest('button').attr('data-modifier');
+        let { damage, type } = await this._resolveTotalDamage(event);
 
-        if (damageElement.find('.rsr-extra-die').length > 0) {
-            const crit = damageElement.find('.rsr-extra-die').text();
-            const dialogPosition = {
-                x: event.originalEvent.screenX,
-                y: event.originalEvent.screenY
-            };
+        let selectTokens = this._applyDamageToSelected ? canvas.tokens.controlled : [];
+        let targetTokens = this._applyDamageToTargeted ? game.user.targets : [];
 
-            damage = await this._resolveCritDamage(Number(damage), Number(crit), dialogPosition);
+        if (this._prioritiseDamageSelected && selectTokens.length > 0) {
+            targetTokens = [];
         }
 
-        const selectTokens = this._applyDamageToSelected ? canvas.tokens.controlled : [];
-        const targetTokens = this._applyDamageToTargeted ? game.user.targets : [];
+        if (this._prioritiseDamageTargeted && targetTokens.size > 0) {
+            selectTokens = [];
+        }
+
         const targets = new Set([...selectTokens, ...targetTokens]);
 
-        await Promise.all(Array.from(targets).map( t => {
+        await Promise.all(Array.from(targets).map(t => {
             const target = t.actor;
+
+            if (SettingsUtility.getSettingValue(SETTING_NAMES.APPLY_DAMAGE_MODS) && !isTempHP && modifier > 0) {
+                damage = CoreUtility.resolveDamageModifiers(target, damage, type, this.roll.item);
+            }
+            
             return isTempHP ? target.applyTempHP(damage) : target.applyDamage(damage, modifier);
         }));
 
@@ -300,26 +351,73 @@ export class QuickCard {
                 canvas.hud.token.render();
             }
         }, 50);
-    }   
+    }
+
+    /**
+     * Processes and handles a quick-repeat button click event.
+     * @param {Event} event The originating event of the button click.
+     * @private
+     */
+    async _processRepeatButtonEvent(event) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const button = event.currentTarget;
+        const action = button.dataset.action;
+
+        if (action === "repeat") {
+           if (!await this.roll.repeatRoll()) {
+                LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.cannotRepeatRoll`));
+           }
+        }
+    }
+
+    /**
+     * Processes and handles a dice reroll click event.
+     * @param {Event} event The originating event of the button click.
+     * @private
+     */
+    async _processRerollDieEvent(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const id = $(event.target).closest(".rsr-dual").attr('data-id');
+        const roll = $(event.target).closest(".tooltip.dice-row-item").index();
+        const part = $(event.target).closest(".tooltip-part").index() + ($(event.target).closest(".tooltip.dice-row-item").hasClass("bonus") ? 1 : 0);            
+        const die = $(event.target).index();
+
+        if (await this.roll.rerollDie(id, roll, part, die)) {
+            this._updateQuickCard();
+        }
+    }
 
     /**
      * Displays a prompt allowing the user to choose if they want to apply critical damage in a field or not.
-     * @param {Number} damage The value of the base damage of a field.
-     * @param {Number} crit The value of the crit damage of a field.
-     * @param {Object} position A vector indicating the position of the originating event.
+     * @param {Event} event The originating event of the button click.
      * @returns {Promise<Number>|Number} The resolved final damage value depending on the user's choices.
      * @private
      */
-    async _resolveCritDamage(damage, crit, position) {
-		if (damage && crit) {
+    async _resolveTotalDamage(event) {
+        const damageElement = $(event.target).closest('.dice-row').find('.rsr-damage');
+        const baseDmg = Number(damageElement.find('.rsr-base-die').attr('data-value'));
+        const critDmg = Number(damageElement.find('.rsr-extra-die').attr('data-value'));
+        const type = damageElement.attr('data-damagetype').toLowerCase();
+
+        if (!baseDmg) {
+            LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.damageIsNullOrUndefined`));
+            return { damage: undefined, type };
+        }
+        
+        let total = baseDmg;
+
+        if (critDmg) {
             if (SettingsUtility.getSettingValue(SETTING_NAMES.ALWAYS_APPLY_CRIT)) {
-                return damage + crit;
-            }
-            else {
-                return await new Promise(async (resolve, reject) => {
+                total += critDmg;
+            } else {
+                total += await new Promise(async (resolve, reject) => {
                     const options = {
-                        left: position.x,
-                        top: position.y,
+                        left: damageElement.offset().left + (damageElement.width() - 200)/2,
+                        top: damageElement.offset().top + damageElement.height() + 5,
                         width: 100
                     };
     
@@ -330,12 +428,12 @@ export class QuickCard {
                             one: {
                                 icon: '<i class="fas fa-check"></i>',
                                 label: CoreUtility.localize(`${MODULE_SHORT}.chat.critPrompt.yes`),
-                                callback: () => { resolve(damage + crit); }
+                                callback: () => { resolve(critDmg); }
                             },
                             two: {
                                 icon: '<i class="fas fa-times"></i>',
                                 label: CoreUtility.localize(`${MODULE_SHORT}.chat.critPrompt.no`),
-                                callback: () => { resolve(damage); }
+                                callback: () => { resolve(0); }
                             }
                         },
                         default: "two"
@@ -344,9 +442,9 @@ export class QuickCard {
                     new Dialog(data, options).render(true);
                 });
             }
-		}
+        }
 
-		return damage || crit;
+		return { damage: total, type};
 	}
 
     /**

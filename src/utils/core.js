@@ -1,4 +1,5 @@
 import { MODULE_NAME, MODULE_SHORT } from "../module/const.js";
+import { ITEM_TYPE } from "./item.js";
 import { LogUtility } from "./log.js";
 import { SettingsUtility, SETTING_NAMES } from "./settings.js";
 
@@ -78,7 +79,79 @@ export class CoreUtility {
 
         LogUtility.logError("Failed to resolve data object as an Actor or an Item.", { ui: false });
         return {};
-	}
+	}    
+
+    /**
+     * Resolves modifiers (e.g. resistances, immunities, etc.) for a given damage total.
+     * @param {Actor} target The target actor to whom the damage is applied.
+     * @param {Number} damage The initial damage total being applied.
+     * @param {String} type The type of the damage being applied.
+     * @param {Item} item The originating item of the damage.
+     * @returns {Number} The modified damage total to apply.
+     */
+    static resolveDamageModifiers(target, damage, type, item) {
+        let result = damage;
+
+        const dv = target.system.traits.dv;
+        const dr = target.system.traits.dr;
+        const di = target.system.traits.di;
+
+        result = CoreUtility.resolveDamageFeats(target, result, type, item);
+        result = CoreUtility.resolveDamageTrait(dv, 2, result, type, item);
+        result = CoreUtility.resolveDamageTrait(dr, 0.5, result, type, item);
+        result = CoreUtility.resolveDamageTrait(di, 0, result, type, item);
+
+        return result < 0 ? 1 : Math.floor(result);
+    }
+
+    /**
+     * Resolves modifiers from Feats for a given damage total.
+     * @param {Actor} target The target actor to whom the damage is applied.
+     * @param {Number} damage The initial damage total being applied.
+     * @param {String} type The type of the damage being applied.
+     * @param {Item} item The originating item of the damage.
+     * @returns {Number} The modified damage total to apply.
+     */
+    static resolveDamageFeats(target, damage, type, item) {
+        let result = damage;
+
+        // FEAT: HEAVY ARMOR MASTER
+        const heavyArmorMaster = target.items.some(i => i.type === ITEM_TYPE.FEATURE && i.name.toLowerCase().includes('heavy armor master'));
+
+        if (heavyArmorMaster) {
+            if (item.type === ITEM_TYPE.WEAPON && !item.system?.properties?.mgc && CONFIG.DND5E.physicalDamageTypes[type]) {
+                result -= 3;
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Resolves modifiers from specific traits (e.g. resistance) for a given damage total.
+     * @param {Object} trait The trait object to resolve.
+     * @param {Number} multiplier The applied mutiplier for this trait.
+     * @param {Number} damage The initial damage total being applied.
+     * @param {String} type The type of the damage being applied.
+     * @param {Item} item The originating item of the damage.
+     * @returns {Number} The modified damage total to apply.
+     */
+    static resolveDamageTrait(trait, multiplier, damage, type, item) {
+        let result = damage;
+        let bypass = false;
+
+        if (trait?.bypasses && trait.bypasses.size > 0 && CONFIG.DND5E.physicalDamageTypes[type]) {
+            trait.bypasses.forEach(b => {
+                bypass ||= item.system.properties[b] ?? false;
+            });
+        }
+
+        if (trait?.value && trait.value.has(type) && !bypass) {
+            result *= multiplier;
+        }
+
+        return result;
+    }
 
     /**
      * Lock variable to prevent multiple roll sounds from playing simultaneously.
@@ -177,6 +250,21 @@ export class CoreUtility {
 	}
 
     /**
+     * Retrieves an index item from compendiums or other collections.
+     * @param {String} identifier The identifier of the iteem to attempt to retrieve.
+     * @returns {Object} The indexed item object with the given identifier.
+     */
+    static getBaseItemIndex(identifier) {
+        let pack = CONFIG.DND5E.sourcePacks.ITEMS;
+        let [scope, collection, id] = identifier.split(".");
+        if ( scope && collection ) pack = `${scope}.${collection}`;
+        if ( !id ) id = identifier;
+        
+        const packObject = game.packs.get(pack);
+        return packObject?.index.get(id);
+    }
+
+    /**
      * Ensures that a parameter container has the correct default parameters and values.
      * @param {Object} params The parameter data container to ensure with default parameters.
      * @returns {Object} The ensured parameter data container.
@@ -189,6 +277,26 @@ export class CoreUtility {
         params.isMultiRoll = params.forceMultiRoll || (params.isMultiRoll ?? false);
 
         return params;
+    }
+
+    /**
+     * Attempts to repack rolls in an array of fields into proper roll objects.
+     * @param {Array} fields The array of fields to repack.
+     * @returns {Array} The array of fields with repacked rolls.
+     */
+    static repackQuickRollFields(fields) {
+        fields.forEach(field => {
+			if (CONFIG[MODULE_SHORT].validMultiRollFields.includes(field[0])) {
+				field[1].roll = Roll.fromData(field[1].roll);
+			}
+
+			if (CONFIG[MODULE_SHORT].validDamageRollFields.includes(field[0])) {
+				field[1].baseRoll = field[1].baseRoll ? Roll.fromData(field[1].baseRoll) : null;
+				field[1].critRoll = field[1].critRoll ? Roll.fromData(field[1].critRoll) : null;
+			}
+		});
+
+        return fields;
     }
 
     /**

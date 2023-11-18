@@ -5,6 +5,7 @@ import { LogUtility } from "./log.js";
 import { QuickRoll } from "../module/quickroll.js";
 import { ItemUtility, ITEM_TYPE } from "./item.js";
 import { SettingsUtility, SETTING_NAMES } from "./settings.js";
+import { DialogUtility } from "./dialog.js";
 
 /**
  * Enumerable of identifiers for different roll types that can be made.
@@ -12,8 +13,10 @@ import { SettingsUtility, SETTING_NAMES } from "./settings.js";
  */
 export const ROLL_TYPE = {
     SKILL: "skill",
+    TOOL: "tool",
     ABILITY_TEST: "check",
     ABILITY_SAVE: "save",
+    DEATH_SAVE: "death",
     ITEM: "item",
     ATTACK: "attack",
     DAMAGE: "damage",
@@ -55,15 +58,29 @@ export class RollUtility {
      * @returns {Promise<Roll>} The roll result of the wrapper.
      */
     static async rollActorWrapper(caller, wrapper, options, id, bypass = false) {
-        const advMode = CoreUtility.eventToAdvantage(options.event);
+        const advMode = CoreUtility.eventToAdvantage(options.event);        
 
-        return await wrapper.call(caller, id, {
+        const bonuses = [];
+        if (options?.event?.button === CONFIG[MODULE_SHORT].situRollMouseButton && !bypass)
+        {
+            const groups = [
+                { label: CoreUtility.localize(`${MODULE_SHORT}.chat.bonus.generic`), id: id ?? "generic" }
+            ]
+
+            const values = await DialogUtility.getBonusFromDialog(groups);
+            bonuses.push(...values.map(b => b.value));
+        }
+
+        const params = {
             fastForward: !bypass,
             chatMessage: bypass,
             advantage: advMode > 0,
             disadvantage: advMode < 0,
-            rollMode: options?.rollMode
-        });
+            rollMode: options?.rollMode,
+            parts: bonuses
+        }
+
+        return id ? wrapper.call(caller, id, params) : wrapper.call(caller, params);
     }
 
     /**
@@ -78,7 +95,7 @@ export class RollUtility {
     static async rollItemWrapper(caller, wrapper, options, bypass = false) {
         // We can ignore the item if it is not one of the types that requires a quick roll.
         if (bypass || !CONFIG[MODULE_SHORT].validItemTypes.includes(caller?.type)) {
-            return await wrapper.call(caller, {}, { ignore: true });
+            return wrapper.call(caller, {}, { ignore: true });
         }
 
         const advMode = CoreUtility.eventToAdvantage(options?.event);
@@ -102,13 +119,39 @@ export class RollUtility {
             await caller.update(itemUpdates);
         }
 
-        return await wrapper.call(caller, config, {
+        const bonuses = [];
+        if (options?.event?.button === CONFIG[MODULE_SHORT].situRollMouseButton && !bypass)
+        {
+            const groups = [];
+
+            if (caller.hasAttack) {
+                groups.push({ label: CoreUtility.localize(`${MODULE_SHORT}.chat.bonus.attack`), id: ROLL_TYPE.ATTACK });
+            }
+
+            if (caller.hasAbilityCheck) {
+                groups.push({ label: CoreUtility.localize(`${MODULE_SHORT}.chat.bonus.ability`), id: ROLL_TYPE.ABILITY_TEST });
+            }
+
+            if (caller.type === ITEM_TYPE.TOOL) {
+                groups.push({ label: CoreUtility.localize(`${MODULE_SHORT}.chat.bonus.tool`), id: ROLL_TYPE.TOOL });
+            }
+
+            if (caller.hasDamage && SettingsUtility.getSettingValue(SETTING_NAMES.MANUAL_DAMAGE_MODE) === 0) {
+                groups.push({ label: CoreUtility.localize(`${MODULE_SHORT}.chat.bonus.damage`), id: ROLL_TYPE.DAMAGE });
+            }
+
+            const values = await DialogUtility.getBonusFromDialog(groups);
+            bonuses.push(...values);
+        }
+
+        return wrapper.call(caller, config, {
             configureDialog,
             createMessage: false,
             advMode,
             isAltRoll,
             spellLevel: caller?.system?.level,
-            rollMode: options?.rollMode
+            rollMode: options?.rollMode,
+            bonuses
         });
     }
 
@@ -130,11 +173,57 @@ export class RollUtility {
 		}
 
         const skill = CONFIG.DND5E.skills[skillId];
-        let title = CoreUtility.localize(skill.label);
-        title += SettingsUtility.getSettingValue(SETTING_NAMES.SHOW_SKILL_ABILITIES) ? ` (${CONFIG.DND5E.abilities[actor.system.skills[skillId].ability]})` : "";
+        const abilityId = options.ability || (actor.system?.skills[skillId]?.ability ?? skill.ability);
 
-        return await _getActorRoll(actor, title, roll, ROLL_TYPE.SKILL, options);
-    }    
+        if (!(abilityId in CONFIG.DND5E.abilities)) {
+            LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.labelNotInDictionary`,
+                { type: "Ability", label: abilityId, dictionary: "CONFIG.DND5E.abilities" }));
+            return null;
+		}
+
+        const ability = CONFIG.DND5E.abilities[abilityId];
+
+        const title = `${skill.label}${SettingsUtility.getSettingValue(SETTING_NAMES.SHOW_SKILL_ABILITIES) ? ` (${ability.label})` : ""}`;
+
+        return _getActorRoll(actor, title, roll, ROLL_TYPE.SKILL, options);
+    }
+
+    /**
+     * Rolls a tool check from a given actor.
+     * @param {Actor} actor The actor object from which the roll is being called. 
+     * @param {String} toolId The id of the tool being rolled.
+     * @param {Roll} roll The roll object that was made for the check.
+     * @param {Object} options Additional options for rolling a tool.
+     * @returns {Promise<QuickRoll>} The created quick roll.
+     */
+    static async rollTool(actor, toolId, roll, options = {}) {        
+        LogUtility.log(`Quick rolling tool check from Actor '${actor.name}'.`);
+
+        if (!(toolId in CONFIG[MODULE_SHORT].combinedToolTypes)) {
+            LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.labelNotInDictionary`,
+                { type: "Tool", label: toolId, dictionary: "CONFIG.DND5E.toolIds, CONFIG.DND5E.toolProficiencies, or CONFIG.DND5E.vehicleTypes" }));
+            return null;
+		}
+
+        const tool = toolId in CONFIG.DND5E.toolIds 
+            ? CoreUtility.getBaseItemIndex(CONFIG.DND5E.toolIds[toolId]) 
+            : { name: CONFIG[MODULE_SHORT].combinedToolTypes[toolId] };
+
+        const abilityId = options.ability || (actor.system.tools[toolId]?.ability ?? "int");
+
+        if (!(abilityId in CONFIG.DND5E.abilities)) {
+            LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.labelNotInDictionary`,
+                { type: "Ability", label: abilityId, dictionary: "CONFIG.DND5E.abilities" }));
+            return null;
+		}
+
+        const ability = CONFIG.DND5E.abilities[abilityId];
+
+        const title = `${tool.name}${SettingsUtility.getSettingValue(SETTING_NAMES.SHOW_SKILL_ABILITIES) ? ` (${ability.label})` : ""}`;
+        options.img = tool.img;
+
+        return _getActorRoll(actor, title, roll, ROLL_TYPE.TOOL, options);
+    }
 
     /**
      * Rolls an ability test from a given actor.
@@ -152,10 +241,12 @@ export class RollUtility {
                 { type: "Ability", label: abilityId, dictionary: "CONFIG.DND5E.abilities" }));
             return null;
 		}
+        
+        const ability = CONFIG.DND5E.abilities[abilityId];
 
-        const title = `${CoreUtility.localize(CONFIG.DND5E.abilities[abilityId].label || CONFIG.DND5E.abilities[abilityId])} ${CoreUtility.localize(`${MODULE_SHORT}.chat.${ROLL_TYPE.ABILITY_TEST}`)}`;
+        const title = `${ability.label} ${CoreUtility.localize(`${MODULE_SHORT}.chat.${ROLL_TYPE.ABILITY_TEST}`)}`;
 
-        return await _getActorRoll(actor, title, roll, ROLL_TYPE.ABILITY_TEST, options);
+        return _getActorRoll(actor, title, roll, ROLL_TYPE.ABILITY_TEST, options);
     }
 
     /**
@@ -175,9 +266,28 @@ export class RollUtility {
             return null;
         }
 
-        const title = `${CoreUtility.localize(CONFIG.DND5E.abilities[abilityId].label || CONFIG.DND5E.abilities[abilityId])} ${CoreUtility.localize(`${MODULE_SHORT}.chat.${ROLL_TYPE.ABILITY_SAVE}`)}`;
+        const ability = CONFIG.DND5E.abilities[abilityId];
 
-        return await _getActorRoll(actor, title, roll, ROLL_TYPE.ABILITY_SAVE, options);
+        const title = `${ability.label} ${CoreUtility.localize(`${MODULE_SHORT}.chat.${ROLL_TYPE.ABILITY_SAVE}`)}`;
+
+        return _getActorRoll(actor, title, roll, ROLL_TYPE.ABILITY_SAVE, options);
+    }
+
+    /**
+     * Rolls a death save from a given actor.
+     * @param {Actor} actor The actor object from which the roll is being called.
+     * @param {Roll} roll The roll object that was made for the check.
+     * @param {Object} options Additional options for rolling a death save.
+     * @returns {Promise<QuickRoll>} The created quick roll.
+     */
+    static async rollDeathSave(actor, roll, options = {}) {
+        if (!roll) return null;
+        
+        LogUtility.log(`Quick rolling death save from Actor '${actor.name}'.`);
+
+        const title = roll.options.flavor;
+
+        return _getActorRoll(actor, title, roll, ROLL_TYPE.DEATH_SAVE, options);
     }
 
     /**
@@ -191,7 +301,7 @@ export class RollUtility {
         LogUtility.log(`Quick rolling Item '${item.name}'.`);
 
         params = CoreUtility.ensureQuickRollParams(params);
-        params.slotLevel = item.system.level;
+        params.slotLevel = params.slotLevel ?? item.system.level;
         params.createMessage = createMessage;
         item.system.level = params.spellLevel ?? item.system.level;
 
@@ -243,6 +353,11 @@ export class RollUtility {
      * @returns {Promise<Roll>} The upgraded multi roll from the provided roll.
      */
     static async upgradeRoll(roll, targetState, params = {}) {
+        if (!roll) {
+            LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.rollIsNullOrUndefined`));
+            return null;
+        }
+
 		if (targetState !== ROLL_STATE.ADV && targetState !== ROLL_STATE.DIS) {
 			LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.incorrectTargetState`, { state: targetState }));
 			return roll;
@@ -256,6 +371,32 @@ export class RollUtility {
         d20BaseTerm.modifiers.push(targetState);
 
         return upgradedRoll;
+    }
+
+    /**
+     * Rerolls a specific die result inside a given term.
+     * @param {Die} term The die term containing the die being rerolled.
+     * @param {Number} targetDie The index of the specific die of the term being rerolled.
+     * @returns 
+     */
+    static async rerollSpecificDie(term, targetDie) {
+        if (!term) {
+			LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.termIsNullOrUndefined`));
+            return null;
+        }
+
+        if (targetDie >= term.results.length) {
+			LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.incorrectTargetDie`));
+            return null;
+        }
+
+        const rerolledDie = await new Die({ number: 1, faces: term.faces }).evaluate({ async: true });
+        
+        term.results[targetDie].rerolled = true;
+        term.results[targetDie].active = false;
+        term.results.splice(targetDie + 1, 0, foundry.utils.duplicate(rerolledDie.results[0]));
+
+        return term;
     }
 
     /**
@@ -291,11 +432,16 @@ export class RollUtility {
             roll.terms[roll.terms.indexOf(d20BaseTerm)] = d20Forced;
         }
 
-        const critOptions = { critThreshold: roll.options.critical, fumbleThreshold: roll.options.fumble, ignoreDiscarded: true };
+        const critOptions = { 
+            critThreshold: roll.options.critical,
+            fumbleThreshold: roll.options.fumble,
+            targetValue: roll.options.targetValue,
+            ignoreDiscarded: true 
+        };
         const critType = RollUtility.getCritTypeForDie( roll.terms.find(d => d.faces === 20), critOptions);
 
         params.isCrit = params.isCrit || critType === CRIT_TYPE.SUCCESS;
-        params.isFumble = params.isFumble || critType == CRIT_TYPE.FAILURE;
+        params.isFumble = params.isFumble || critType === CRIT_TYPE.FAILURE;
         params.isMultiRoll = params.isMultiRoll || roll.hasAdvantage || roll.hasDisadvantage;
 
         return roll;
@@ -325,7 +471,6 @@ export class RollUtility {
         });
 
         const firstDie = critTerms.find(t => t instanceof Die);
-        const index = critTerms.indexOf(firstDie);
 
         if (options.criticalBonusDice && options.criticalBonusDice > 0 && groupIndex === 0 && firstDie) {
             const bonusDice = await new Die({ number: options.criticalBonusDice, faces: firstDie.faces }).evaluate({ async: true });
@@ -367,7 +512,7 @@ async function _getActorRoll(actor, title, roll, rollType, options = {}) {
         return null;
     }
 
-    if (rollType !== ROLL_TYPE.SKILL && rollType !== ROLL_TYPE.ABILITY_SAVE && rollType !== ROLL_TYPE.ABILITY_TEST) {
+    if (!CONFIG[MODULE_SHORT].validActorRolls.includes(rollType)) {
         LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.incorrectRollType`, { function: "Actor", type: rollType }));
         return null;
     }
@@ -409,7 +554,7 @@ async function _getItemRoll(item, params, rollType) {
         return null;
     }
 
-    if (rollType !== ROLL_TYPE.ITEM) {
+    if (!CONFIG[MODULE_SHORT].validItemRolls.includes(rollType)) {
         LogUtility.logError(CoreUtility.localize(`${MODULE_SHORT}.messages.error.incorrectRollType`, { function: "Item", type: rollType }));
         return null;
     }
@@ -460,7 +605,7 @@ function _countCritsFumbles(die, options)
     let fumble = 0;
 
     if (die && die.faces > 1) {
-        let { critThreshold, fumbleThreshold, ignoreDiscarded } = options
+        let { critThreshold, fumbleThreshold, targetValue, ignoreDiscarded } = options
 
         critThreshold = critThreshold ?? die.options.critical ?? die.faces;
         fumbleThreshold = fumbleThreshold ?? die.options.fumble ?? 1;
@@ -470,9 +615,9 @@ function _countCritsFumbles(die, options)
                 continue;
             }
 
-            if (result.result >= critThreshold) {
+            if (result.result >= targetValue || result.result >= critThreshold) {
                 crit += 1;
-            } else if (result.result <= fumbleThreshold) {
+            } else if (result.result < targetValue || result.result <= fumbleThreshold) {
                 fumble += 1;
             }
         }
