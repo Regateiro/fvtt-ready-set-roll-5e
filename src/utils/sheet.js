@@ -123,7 +123,7 @@ async function _addItemOptions(item, html) {
         hasConsume: item.hasQuantity || item.hasUses || item._hasResource || item.hasRecharge,
         hasQuantity: item.hasQuantity,
         hasUses: item.hasUses,
-        hasResource: item._hasResource,
+        _hasResource: item._hasResource,
         hasRecharge: item.hasRecharge,
         hasOther: item.system.formula ? true : false,
         isAttack: item.hasAttack,
