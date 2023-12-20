@@ -304,7 +304,14 @@ export class RollUtility {
         };
 
         params = CoreUtility.ensureQuickRollParams(params);
-        params.slotLevel = params.slotLevel ?? item.system.level;
+
+        if (params.slotLevel) {
+            params.slotLevel = Number.isInteger(params.slotLevel) ? params.slotLevel
+                : params.slotLevel === "pact" ? item.actor.system.spells.pact.level : parseInt(params.slotLevel.replace("spell", ""));
+        } else {
+            params.slotLevel = item.system.level;
+        }
+        
         params.createMessage = createMessage;
         item.system.level = params.spellLevel ?? item.system.level;
 
@@ -451,6 +458,33 @@ export class RollUtility {
     }
 
     /**
+     * Generates the base roll for a critical roll from an original base roll.
+     * @param {Roll} baseRoll The base roll to convert for a crit roll.
+     * @param {Number} groupIndex The index of the damage group. Some crit options only apply to the first damage group.
+     * @param {Object} rollData Roll data for the item to calculate modifiers if needed.
+     * @param {Object} options Additional options for rolling critical damage.
+     * @returns {Promise<Roll>} The critical roll for the given base.
+     */
+    static async getCritBaseRoll(baseRoll, groupIndex, rollData, options = {}) {
+        const origTerms = foundry.utils.duplicate(baseRoll.terms);
+
+        const baseTerms = [];
+        origTerms.forEach(term => {
+            let baseTerm = RollTerm.fromData(term);
+
+            baseTerm._evaluated = false;
+            baseTerm.results = [];
+
+            baseTerms.push(baseTerm);
+        });
+
+        return await Roll.fromTerms(baseTerms).evaluate({ 
+            maximize: options.powerfulCritical,
+            async: true
+        });
+    }    
+
+    /**
      * Generates a critical roll from a given base roll.
      * @param {Roll} baseRoll The base roll to roll a crit for.
      * @param {Number} groupIndex The index of the damage group. Some crit options only apply to the first damage group.
@@ -475,7 +509,7 @@ export class RollUtility {
 
         const firstDie = critTerms.find(t => t instanceof Die);
 
-        if (options.criticalBonusDice && options.criticalBonusDice > 0 && groupIndex === 0 && firstDie) {
+        if (groupIndex === 0 && options.criticalBonusDice && options.criticalBonusDice > 0 && firstDie) {
             const bonusDice = await new Die({ number: options.criticalBonusDice, faces: firstDie.faces }).evaluate({ async: true });
 
             critTerms.push(plus, bonusDice);
@@ -493,7 +527,6 @@ export class RollUtility {
         }
 
         return await Roll.fromTerms(Roll.simplifyTerms(critTerms)).reroll({
-            maximize: options.powerfulCritical,
             async: true
         });
     }
