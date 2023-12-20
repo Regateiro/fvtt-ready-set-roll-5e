@@ -1,5 +1,5 @@
 INSTALL_PATH=~/.local/share/FoundryVTT/Data/modules/ready-set-roll-5e
-VERSION=2.1.3a
+VERSION=2.1.3b
 
 .PHONY: compress install
 

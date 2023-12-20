@@ -299,6 +299,9 @@ export class RollUtility {
      */
     static async rollItem(item, params, createMessage = true) {
         LogUtility.log(`Quick rolling Item '${item.name}'.`);
+        if (params?.slotLevel) {
+            params.slotLevel = params?.slotLevel.replace('spell', '');
+        };
 
         params = CoreUtility.ensureQuickRollParams(params);
         params.slotLevel = params.slotLevel ?? item.system.level;
